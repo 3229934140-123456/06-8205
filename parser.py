@@ -1,9 +1,9 @@
-from typing import List
+from typing import List, Optional
 from tokenizer import Token, TokenType, Tokenizer
 from calc_ast import (
     ASTNode, NumberNode, IdentifierNode, BinaryOpNode, UnaryOpNode,
     AssignmentNode, FunctionCallNode, FunctionDefNode, OperatorDeclareNode,
-    BlockNode, OperatorTable, Associativity
+    BlockNode, OperatorTable, Associativity, TernaryIfNode
 )
 
 
@@ -34,6 +34,9 @@ class Parser:
             self.pos += 1
         return token
 
+    def at_end(self) -> bool:
+        return self.check(TokenType.EOF)
+
     def expect(self, token_type: TokenType, value: str = None) -> Token:
         token = self.current()
         if token.type != token_type:
@@ -60,6 +63,12 @@ class Parser:
             statements.append(self.parse_statement())
         return BlockNode(statements)
 
+    def parse_one_statement(self) -> Optional[ASTNode]:
+        if self.at_end():
+            return None
+        stmt = self.parse_statement()
+        return stmt
+
     def parse_statement(self) -> ASTNode:
         if self.check(TokenType.OP_DECLARE):
             return self.parse_operator_declare()
@@ -71,7 +80,13 @@ class Parser:
 
     def parse_operator_declare(self) -> OperatorDeclareNode:
         self.expect(TokenType.OP_DECLARE)
-        op_token = self.expect(TokenType.OPERATOR)
+        op_token = self.current()
+        if op_token.type == TokenType.OPERATOR:
+            self.advance()
+        elif op_token.type == TokenType.IDENTIFIER:
+            self.advance()
+        else:
+            raise ParseError(f"Expected operator symbol, got {op_token.type.name}", op_token)
         self.expect(TokenType.COMMA)
 
         negative = False
@@ -95,7 +110,23 @@ class Parser:
             raise ParseError(f"Expected 'left' or 'right', got {assoc_token.value}", assoc_token)
         self.advance()
 
-        return OperatorDeclareNode(op_token.value, precedence, associativity)
+        left_param = None
+        right_param = None
+        body = None
+
+        if self.check(TokenType.LPAREN):
+            self.advance()
+            left_param = self.expect(TokenType.IDENTIFIER).value
+            self.expect(TokenType.COMMA)
+            right_param = self.expect(TokenType.IDENTIFIER).value
+            self.expect(TokenType.RPAREN)
+            self.expect(TokenType.ASSIGN)
+            body = self.parse_expression()
+
+        return OperatorDeclareNode(
+            op_token.value, precedence, associativity,
+            left_param, right_param, body
+        )
 
     def parse_function_def(self) -> FunctionDefNode:
         self.expect(TokenType.FUN)
@@ -124,26 +155,40 @@ class Parser:
 
         while True:
             token = self.current()
-            if token.type != TokenType.OPERATOR:
-                break
 
-            op_symbol = token.value
-            if not self.op_table.has_operator(op_symbol):
-                raise ParseError(f"Unknown operator '{op_symbol}'", token)
+            if token.type == TokenType.QUESTION and 0 >= min_precedence:
+                self.advance()
+                then_expr = self.parse_expression(0)
+                self.expect(TokenType.COLON)
+                else_expr = self.parse_expression(0)
+                left = TernaryIfNode(left, then_expr, else_expr)
+                continue
 
-            current_prec = self.op_table.get_precedence(op_symbol)
-            if current_prec < min_precedence:
-                break
+            is_operator_token = (
+                token.type == TokenType.OPERATOR
+                or (token.type == TokenType.IDENTIFIER and self.op_table.has_operator(token.value))
+            )
 
-            associativity = self.op_table.get_associativity(op_symbol)
-            if associativity == Associativity.LEFT:
-                next_min_prec = current_prec + 1
+            if is_operator_token:
+                op_symbol = token.value
+                if not self.op_table.has_operator(op_symbol):
+                    raise ParseError(f"Unknown operator '{op_symbol}'", token)
+
+                current_prec = self.op_table.get_precedence(op_symbol)
+                if current_prec < min_precedence:
+                    break
+
+                associativity = self.op_table.get_associativity(op_symbol)
+                if associativity == Associativity.LEFT:
+                    next_min_prec = current_prec + 1
+                else:
+                    next_min_prec = current_prec
+
+                self.advance()
+                right = self.parse_expression(next_min_prec)
+                left = BinaryOpNode(left, op_symbol, right)
             else:
-                next_min_prec = current_prec
-
-            self.advance()
-            right = self.parse_expression(next_min_prec)
-            left = BinaryOpNode(left, op_symbol, right)
+                break
 
         return left
 

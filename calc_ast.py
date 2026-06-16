@@ -132,6 +132,16 @@ class OperatorDeclareNode(ASTNode):
     symbol: str
     precedence: int
     associativity: Associativity
+    left_param: Optional[str] = None
+    right_param: Optional[str] = None
+    body: Optional[ASTNode] = None
+
+
+@dataclass
+class TernaryIfNode(ASTNode):
+    cond: ASTNode
+    then_expr: ASTNode
+    else_expr: ASTNode
 
 
 @dataclass

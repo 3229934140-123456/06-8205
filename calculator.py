@@ -1,17 +1,18 @@
 from typing import Any, Callable, Optional
-from tokenizer import Tokenizer
+import sys
+from tokenizer import Tokenizer, Token
 from parser import Parser, ParseError
-from evaluator import Evaluator, EvaluationError
+from evaluator import (
+    Evaluator, EvaluationError, RecursionLimitError,
+    DivideByZeroError, ArityMismatchError, UndefinedNameError,
+    UndefinedOperatorError
+)
 from calc_ast import OperatorTable, Associativity, OperatorDeclareNode
 
 
 class OperatorSemanticRegistry:
     def __init__(self):
         self._semantics: dict[str, Callable[[Any, Any], Any]] = {}
-        self._init_builtin_semantics()
-
-    def _init_builtin_semantics(self):
-        pass
 
     def register(self, symbol: str, func: Callable[[Any, Any], Any]) -> None:
         self._semantics[symbol] = func
@@ -23,12 +24,40 @@ class OperatorSemanticRegistry:
         return symbol in self._semantics
 
 
+def format_error_with_source(source: str, line_num: int, col_num: int,
+                              message: str, error_type: str = "Error") -> str:
+    lines = source.split('\n')
+    output_lines = []
+    output_lines.append(f"{error_type}: {message}")
+
+    if line_num < 1 or line_num > len(lines):
+        return '\n'.join(output_lines)
+
+    display_start = max(0, line_num - 3)
+    display_end = min(len(lines), line_num + 2)
+
+    for i in range(display_start, display_end):
+        actual_line = i + 1
+        prefix = f"  {actual_line:>4} | "
+        output_lines.append(prefix + lines[i])
+        if actual_line == line_num:
+            pointer_col = max(1, col_num)
+            padding = ' ' * (len(prefix) + pointer_col - 1)
+            output_lines.append(padding + '^')
+
+    return '\n'.join(output_lines)
+
+
 class CalculatorEngine:
     def __init__(self):
         self.op_table = OperatorTable()
         self.op_semantics = OperatorSemanticRegistry()
-        self.evaluator = Evaluator(self.op_table)
+        self.evaluator = Evaluator(
+            self.op_table,
+            on_operator_declared=self._on_operator_declared
+        )
         self._patch_evaluator()
+        self._last_source = ""
 
     def _patch_evaluator(self):
         original_apply = self.evaluator.apply_binary_operator
@@ -41,24 +70,62 @@ class CalculatorEngine:
 
         self.evaluator.apply_binary_operator = patched_apply
 
+    def _on_operator_declared(self, symbol: str, func: Callable) -> None:
+        self.op_semantics.register(symbol, func)
+
     def define_operator_semantic(self, symbol: str, func: Callable[[Any, Any], Any]) -> None:
         self.op_semantics.register(symbol, func)
 
     def execute(self, source: str) -> Any:
+        self._last_source = source
         tokens = Tokenizer(source).tokenize()
         parser = Parser(tokens, self.op_table)
 
-        try:
-            ast = parser.parse_program()
-        except ParseError as e:
-            raise SyntaxError(str(e)) from e
+        last_result = None
 
-        try:
-            result = self.evaluator.evaluate(ast)
-        except EvaluationError as e:
-            raise RuntimeError(str(e)) from e
+        while True:
+            try:
+                stmt = parser.parse_one_statement()
+            except ParseError as e:
+                msg = self._format_parse_error(source, e)
+                raise SyntaxError(msg) from e
 
-        return result
+            if stmt is None:
+                break
+
+            try:
+                last_result = self.evaluator.evaluate(stmt)
+            except EvaluationError as e:
+                msg = self._format_eval_error(source, e)
+                raise RuntimeError(msg) from e
+
+        return last_result
+
+    def _format_parse_error(self, source: str, error: ParseError) -> str:
+        token = error.token
+        line = token.line if token else 1
+        col = token.column if token else 1
+        return format_error_with_source(source, line, col, str(error), "SyntaxError")
+
+    def _format_eval_error(self, source: str, error: EvaluationError) -> str:
+        token = getattr(error, 'token', None)
+        line = token.line if token else 1
+        col = token.column if token else 1
+
+        if isinstance(error, RecursionLimitError):
+            type_name = "RecursionError"
+        elif isinstance(error, DivideByZeroError):
+            type_name = "ZeroDivisionError"
+        elif isinstance(error, ArityMismatchError):
+            type_name = "ArityError"
+        elif isinstance(error, UndefinedNameError):
+            type_name = "NameError"
+        elif isinstance(error, UndefinedOperatorError):
+            type_name = "OperatorError"
+        else:
+            type_name = "RuntimeError"
+
+        return format_error_with_source(source, line, col, str(error), type_name)
 
     def declare_operator(self, symbol: str, precedence: int,
                          associativity: str = 'left',
@@ -81,25 +148,31 @@ class CalculatorEngine:
                      key=lambda x: x.precedence, reverse=True)
         return ops
 
+    def set_max_recursion(self, depth: int):
+        self.evaluator.set_max_recursion(depth)
+
     def reset(self):
         self.op_table = OperatorTable()
         self.op_semantics = OperatorSemanticRegistry()
-        self.evaluator = Evaluator(self.op_table)
+        self.evaluator = Evaluator(
+            self.op_table,
+            on_operator_declared=self._on_operator_declared
+        )
         self._patch_evaluator()
 
 
 def run_repl():
     calc = CalculatorEngine()
-    print("Custom Operator Calculator REPL")
-    print("================================")
-    print("Commands:")
-    print("  op <symbol>, <precedence>, <left/right>  - declare operator")
-    print("  fun <name>(<params>) = <body>            - define function")
-    print("  <var> = <expr>                           - assign variable")
-    print("  <expr>                                   - evaluate expression")
-    print("  :ops                                     - list all operators")
-    print("  :reset                                   - reset calculator")
-    print("  :quit                                    - exit REPL")
+    print("Custom Operator Calculator REPL (v2)")
+    print("====================================")
+    print("Syntax:")
+    print("  op <sym>, <prec>, <left/right> (a, b) = <body>  - declare operator with rule")
+    print("  op <sym>, <prec>, <left/right>                   - declare operator syntax only")
+    print("  fun <name>(<params>) = <body>                    - define function")
+    print("  <cond> ? <then> : <else>                         - ternary conditional")
+    print("  <var> = <expr>                                   - assign variable")
+    print("  <expr>                                           - evaluate expression")
+    print("REPL commands:  :ops  :reset  :maxrec <n>  :quit")
     print()
 
     while True:
@@ -115,10 +188,26 @@ def run_repl():
                 continue
             if line == ':ops':
                 ops = calc.list_operators()
+                print(f"  {'Symbol':>6}  {'Prec':>4}  {'Assoc':>5}  {'Type':>8}  {'Semantic':>8}")
+                print("  " + "-" * 45)
                 for op in ops:
                     status = "builtin" if op.is_builtin else "user"
                     assoc = "left" if op.associativity == Associativity.LEFT else "right"
-                    print(f"  {op.symbol:>4}  prec={op.precedence:>3}  {assoc:>5}  ({status})")
+                    has_sem = calc.op_semantics.has(op.symbol) or op.is_builtin
+                    sem = "yes" if has_sem else "no"
+                    print(f"  {op.symbol:>6}  {op.precedence:>4}  {assoc:>5}  {status:>8}  {sem:>8}")
+                continue
+            if line.startswith(':maxrec'):
+                parts = line.split()
+                if len(parts) == 2:
+                    try:
+                        n = int(parts[1])
+                        calc.set_max_recursion(n)
+                        print(f"Max recursion set to {n}")
+                    except ValueError:
+                        print("Usage: :maxrec <positive_integer>")
+                else:
+                    print("Usage: :maxrec <positive_integer>")
                 continue
 
             result = calc.execute(line)
@@ -128,7 +217,7 @@ def run_repl():
                 else:
                     print(result)
         except (SyntaxError, RuntimeError, ValueError) as e:
-            print(f"Error: {e}")
+            print(str(e))
         except KeyboardInterrupt:
             print()
             break

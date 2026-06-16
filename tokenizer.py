@@ -15,6 +15,8 @@ class TokenType(Enum):
     OP_DECLARE = auto()
     LEFT_ASSOC = auto()
     RIGHT_ASSOC = auto()
+    QUESTION = auto()
+    COLON = auto()
     EOF = auto()
 
 
@@ -89,7 +91,7 @@ class Tokenizer:
     def read_operator(self) -> Token:
         start_col = self.column
         start_pos = self.pos
-        op_chars = '+-*/%^&|~<>!=@#$.:?'
+        op_chars = '+-*/%^&|~<>!=@#$.'
         while self.peek() and self.peek() in op_chars:
             self.advance()
         value = self.source[start_pos:self.pos]
@@ -117,6 +119,12 @@ class Tokenizer:
                 self.advance()
             elif ch == ',':
                 self.tokens.append(Token(TokenType.COMMA, ch, self.line, self.column))
+                self.advance()
+            elif ch == '?':
+                self.tokens.append(Token(TokenType.QUESTION, ch, self.line, self.column))
+                self.advance()
+            elif ch == ':':
+                self.tokens.append(Token(TokenType.COLON, ch, self.line, self.column))
                 self.advance()
             else:
                 self.tokens.append(self.read_operator())
