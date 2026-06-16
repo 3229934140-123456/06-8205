@@ -628,5 +628,228 @@ avg
         self.assertEqual(result, expected)
 
 
+class TestRecordDict(unittest.TestCase):
+    def setUp(self):
+        self.calc = CalculatorEngine()
+
+    def test_record_literal(self):
+        result = self.calc.execute('{name: "Alice", age: 30}')
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result['name'], 'Alice')
+        self.assertEqual(result['age'], 30.0)
+
+    def test_record_dot_access(self):
+        self.calc.execute('rec = {name: "Bob", score: 95}')
+        self.assertEqual(self.calc.execute('rec.name'), 'Bob')
+        self.assertEqual(self.calc.execute('rec.score'), 95.0)
+
+    def test_record_field_update(self):
+        self.calc.execute('rec = {name: "Alice", age: 30}')
+        self.calc.execute('rec.age = 31')
+        self.assertEqual(self.calc.execute('rec.age'), 31.0)
+
+    def test_record_in_list(self):
+        self.calc.execute('items = [{name: "A", val: 10}, {name: "B", val: 20}]')
+        self.assertEqual(self.calc.execute('items[0].name'), 'A')
+        self.assertEqual(self.calc.execute('items[1].val'), 20.0)
+
+    def test_record_string_key_access(self):
+        self.calc.execute('rec = {name: "test", val: 42}')
+        self.assertEqual(self.calc.execute('rec["name"]'), 'test')
+
+    def test_record_type(self):
+        self.assertEqual(self.calc.execute('type({a: 1})'), 'record')
+
+    def test_record_len(self):
+        self.assertEqual(self.calc.execute('len({a: 1, b: 2})'), 2)
+
+    def test_record_keys_values(self):
+        self.calc.execute('rec = {name: "Alice", score: 90}')
+        keys = self.calc.execute('keys(rec)')
+        self.assertIn('name', keys)
+        self.assertIn('score', keys)
+        vals = self.calc.execute('values(rec)')
+        self.assertIn('Alice', vals)
+        self.assertIn(90.0, vals)
+
+    def test_record_has_key(self):
+        self.calc.execute('rec = {name: "Alice"}')
+        self.assertEqual(self.calc.execute('has_key(rec, "name")'), 1.0)
+        self.assertEqual(self.calc.execute('has_key(rec, "age")'), 0.0)
+
+    def test_record_missing_field_error(self):
+        self.calc.execute('rec = {name: "Alice"}')
+        with self.assertRaises(RuntimeError):
+            self.calc.execute('rec.age')
+
+
+class TestListOperationsExtended(unittest.TestCase):
+    def setUp(self):
+        self.calc = CalculatorEngine()
+
+    def test_reduce_sum(self):
+        self.calc.execute('fun add(a, b) = a + b')
+        self.assertEqual(self.calc.execute('reduce(add, 0, [1, 2, 3, 4, 5])'), 15)
+
+    def test_reduce_product(self):
+        self.calc.execute('fun mul(a, b) = a * b')
+        self.assertEqual(self.calc.execute('reduce(mul, 1, [1, 2, 3, 4, 5])'), 120)
+
+    def test_sort_basic(self):
+        self.assertEqual(self.calc.execute('sort([3, 1, 4, 1, 5, 9])'), [1.0, 1.0, 3.0, 4.0, 5.0, 9.0])
+
+    def test_sort_by(self):
+        self.calc.execute('students = [{name: "C", score: 95}, {name: "A", score: 80}, {name: "B", score: 90}]')
+        self.calc.execute('fun getScore(r) = r.score')
+        result = self.calc.execute('sort_by(getScore, students)')
+        self.assertEqual(result[0]['name'], 'A')
+        self.assertEqual(result[2]['name'], 'C')
+
+    def test_reverse(self):
+        self.assertEqual(self.calc.execute('reverse([1, 2, 3])'), [1.0, 2.0, 3.0][::-1])
+
+    def test_reduce_with_records(self):
+        self.calc.execute('fun add(a, b) = a + b')
+        self.calc.execute('students = [{name: "A", score: 80}, {name: "B", score: 90}]')
+        self.calc.execute('fun getScore(r) = r.score')
+        self.assertEqual(self.calc.execute('reduce(add, 0, map(getScore, students))'), 170.0)
+
+    def test_filter_map_sort_pipeline(self):
+        self.calc.execute('fun isEven(x) = x % 2 == 0')
+        self.calc.execute('fun double(x) = x * 2')
+        result = self.calc.execute('sort(map(double, filter(isEven, [5, 4, 3, 2, 1])))')
+        self.assertEqual(result, [4.0, 8.0])
+
+
+class TestIfBlockAsExpression(unittest.TestCase):
+    def setUp(self):
+        self.calc = CalculatorEngine()
+
+    def test_if_in_assignment(self):
+        result = self.calc.execute('x = if 1 do 100 else 200 end')
+        self.assertEqual(result, 100.0)
+        self.assertEqual(self.calc.execute('x'), 100.0)
+
+    def test_if_in_assignment_false(self):
+        result = self.calc.execute('x = if 0 do 100 else 200 end')
+        self.assertEqual(result, 200.0)
+
+    def test_if_in_function_body(self):
+        self.calc.execute('fun abs_val(x) = if x < 0 do -x else x end')
+        self.assertEqual(self.calc.execute('abs_val(5)'), 5.0)
+        self.assertEqual(self.calc.execute('abs_val(-3)'), 3.0)
+
+    def test_if_in_for_accumulator(self):
+        program = """for x, acc = 0 in [1, -2, 3, -4, 5] do
+  acc = acc + if x > 0 do x else 0 end
+end"""
+        self.assertEqual(self.calc.execute(program), 9)
+
+    def test_nested_if_in_expression(self):
+        program = """result = if 1 > 2 do
+  "no"
+else do
+  if 3 > 2 do
+    "yes"
+  else do
+    "no"
+  end
+end
+"""
+        self.assertEqual(self.calc.execute(program), 'yes')
+
+
+class TestReplIfFunctionFix(unittest.TestCase):
+    def test_if_function_call_is_complete(self):
+        self.assertFalse(is_input_incomplete('if(1, 10, 20)'))
+
+    def test_if_function_with_args_is_complete(self):
+        self.calc = CalculatorEngine()
+        self.calc.execute('fun if(c, t, e) = c * t + (1 - c) * e')
+        self.assertFalse(is_input_incomplete('if(1, 10, 20)'))
+
+    def test_if_block_is_incomplete(self):
+        self.assertTrue(is_input_incomplete('if x > 0 do'))
+
+    def test_if_block_complete(self):
+        self.assertFalse(is_input_incomplete('if 1 do\n  42\nend'))
+
+    def test_record_brace_incomplete(self):
+        self.assertTrue(is_input_incomplete('{name: "Alice"'))
+
+    def test_record_brace_complete(self):
+        self.assertFalse(is_input_incomplete('{name: "Alice"}'))
+
+
+class TestStringLiteral(unittest.TestCase):
+    def setUp(self):
+        self.calc = CalculatorEngine()
+
+    def test_string_value(self):
+        self.assertEqual(self.calc.execute('"hello"'), 'hello')
+
+    def test_string_in_record(self):
+        self.calc.execute('r = {greeting: "hi"}')
+        self.assertEqual(self.calc.execute('r.greeting'), 'hi')
+
+    def test_string_type(self):
+        self.assertEqual(self.calc.execute('type("test")'), 'string')
+
+    def test_string_escape(self):
+        self.assertEqual(self.calc.execute('"hello\\nworld"'), 'hello\nworld')
+
+    def test_string_concat_not_supported(self):
+        with self.assertRaises((SyntaxError, RuntimeError)):
+            self.calc.execute('"a" + "b"')
+
+
+class TestRecordDataProcessing(unittest.TestCase):
+    def test_student_average_with_records(self):
+        program = """fun add(a, b) = a + b
+students = [{name: "Alice", score: 90}, {name: "Bob", score: 85}, {name: "Charlie", score: 95}]
+fun getScore(r) = r.score
+fun getName(r) = r.name
+scores = map(getScore, students)
+total = reduce(add, 0, scores)
+avg = total / len(students)
+avg
+"""
+        result = CalculatorEngine().execute(program)
+        self.assertEqual(result, 90.0)
+
+    def test_sort_records_and_access(self):
+        program = """students = [{name: "C", score: 70}, {name: "A", score: 95}, {name: "B", score: 85}]
+fun getScore(r) = r.score
+sorted = sort_by(getScore, students)
+sorted[2].name
+"""
+        result = CalculatorEngine().execute(program)
+        self.assertEqual(result, 'A')
+
+    def test_filter_records(self):
+        program = """students = [{name: "A", score: 60}, {name: "B", score: 90}, {name: "C", score: 75}]
+fun getScore(r) = r.score
+fun isPassing(r) = r.score >= 70
+passed = filter(isPassing, students)
+len(passed)
+"""
+        result = CalculatorEngine().execute(program)
+        self.assertEqual(result, 2)
+
+    def test_record_update_in_loop(self):
+        program = """rec = {count: 0, total: 0}
+data = [10, 20, 30]
+for x, acc = rec in data do
+  acc.total = acc.total + x
+  acc.count = acc.count + 1
+  acc
+end
+"""
+        calc = CalculatorEngine()
+        result = calc.execute(program)
+        self.assertEqual(result['total'], 60.0)
+        self.assertEqual(result['count'], 3.0)
+
+
 if __name__ == '__main__':
     unittest.main(argv=['first-arg-is-ignored'], exit=False, verbosity=2)

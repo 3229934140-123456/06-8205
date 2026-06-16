@@ -200,3 +200,26 @@ class IfBlockNode(ASTNode):
 class WhileBlockNode(ASTNode):
     cond: ASTNode
     body: ASTNode
+
+
+@dataclass
+class StringNode(ASTNode):
+    value: str
+
+
+@dataclass
+class RecordNode(ASTNode):
+    pairs: List[tuple] = field(default_factory=list)
+
+
+@dataclass
+class DotAccessNode(ASTNode):
+    target: ASTNode
+    field: str
+
+
+@dataclass
+class FieldAssignNode(ASTNode):
+    target: ASTNode
+    field: str
+    value: ASTNode

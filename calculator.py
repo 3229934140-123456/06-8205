@@ -52,17 +52,18 @@ def is_input_incomplete(source: str) -> bool:
     tokens = Tokenizer(source).tokenize()
     depth_paren = 0
     depth_bracket = 0
+    depth_brace = 0
     depth_do = 0
     last_meaningful = None
     saw_fun = False
     saw_op = False
-    saw_if = False
+    saw_if_block = False
     saw_while = False
     saw_for = False
     saw_in = False
     saw_assign = False
 
-    for tok in tokens:
+    for i, tok in enumerate(tokens):
         if tok.type == TokenType.EOF:
             continue
         if tok.type == TokenType.LPAREN:
@@ -73,6 +74,10 @@ def is_input_incomplete(source: str) -> bool:
             depth_bracket += 1
         elif tok.type == TokenType.RBRACKET:
             depth_bracket -= 1
+        elif tok.type == TokenType.LBRACE:
+            depth_brace += 1
+        elif tok.type == TokenType.RBRACE:
+            depth_brace -= 1
         elif tok.type == TokenType.DO:
             depth_do += 1
         elif tok.type == TokenType.END:
@@ -82,7 +87,9 @@ def is_input_incomplete(source: str) -> bool:
         elif tok.type == TokenType.OP_DECLARE:
             saw_op = True
         elif tok.type == TokenType.IDENTIFIER and tok.value == 'if':
-            saw_if = True
+            next_tok = tokens[i + 1] if i + 1 < len(tokens) else None
+            if next_tok and next_tok.type != TokenType.LPAREN:
+                saw_if_block = True
         elif tok.type == TokenType.WHILE:
             saw_while = True
         elif tok.type == TokenType.FOR:
@@ -93,7 +100,7 @@ def is_input_incomplete(source: str) -> bool:
             saw_assign = True
         last_meaningful = tok
 
-    if depth_paren > 0 or depth_bracket > 0 or depth_do > 0:
+    if depth_paren > 0 or depth_bracket > 0 or depth_brace > 0 or depth_do > 0:
         return True
 
     if saw_fun and not saw_assign and depth_do == 0:
@@ -105,7 +112,7 @@ def is_input_incomplete(source: str) -> bool:
     ):
         return True
 
-    if saw_if and last_meaningful and last_meaningful.type not in (TokenType.END, TokenType.ELSE):
+    if saw_if_block and last_meaningful and last_meaningful.type not in (TokenType.END, TokenType.ELSE):
         if depth_do == 0:
             return True
 
@@ -238,16 +245,18 @@ class CalculatorEngine:
 
 
 def _format_result(val):
+    if isinstance(val, dict):
+        items = []
+        for k, v in val.items():
+            items.append(f"{k}: {_format_result(v)}")
+        return '{' + ', '.join(items) + '}'
     if isinstance(val, list):
         items = []
         for x in val:
-            if isinstance(x, list):
-                items.append(_format_result(x))
-            elif isinstance(x, float) and x == int(x):
-                items.append(str(int(x)))
-            else:
-                items.append(str(x))
+            items.append(_format_result(x))
         return '[' + ', '.join(items) + ']'
+    if isinstance(val, str):
+        return f'"{val}"'
     if isinstance(val, float) and val == int(val):
         return str(int(val))
     return str(val)

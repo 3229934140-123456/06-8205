@@ -5,12 +5,15 @@ from typing import List, Optional
 
 class TokenType(Enum):
     NUMBER = auto()
+    STRING = auto()
     IDENTIFIER = auto()
     OPERATOR = auto()
     LPAREN = auto()
     RPAREN = auto()
     LBRACKET = auto()
     RBRACKET = auto()
+    LBRACE = auto()
+    RBRACE = auto()
     COMMA = auto()
     ASSIGN = auto()
     FUN = auto()
@@ -22,6 +25,7 @@ class TokenType(Enum):
     DO = auto()
     END = auto()
     DOTDOT = auto()
+    DOT = auto()
     FOR = auto()
     WHILE = auto()
     IN = auto()
@@ -106,13 +110,40 @@ class Tokenizer:
     def read_operator(self) -> Token:
         start_col = self.column
         start_pos = self.pos
-        op_chars = '+-*/%^&|~<>!=@#$.'
+        op_chars = '+-*/%^&|~<>!=@#$'
         while self.peek() and self.peek() in op_chars:
             self.advance()
         value = self.source[start_pos:self.pos]
         if value == '=':
             return Token(TokenType.ASSIGN, value, self.line, start_col)
         return Token(TokenType.OPERATOR, value, self.line, start_col)
+
+    def read_string(self) -> Token:
+        start_col = self.column
+        start_line = self.line
+        self.advance()
+        chars = []
+        while self.peek() and self.peek() != '"':
+            if self.peek() == '\\':
+                self.advance()
+                ch = self.peek()
+                if ch == 'n':
+                    chars.append('\n')
+                elif ch == 't':
+                    chars.append('\t')
+                elif ch == '\\':
+                    chars.append('\\')
+                elif ch == '"':
+                    chars.append('"')
+                else:
+                    chars.append('\\')
+                    chars.append(ch)
+            else:
+                chars.append(self.peek())
+            self.advance()
+        self.advance()
+        value = ''.join(chars)
+        return Token(TokenType.STRING, value, start_line, start_col)
 
     def tokenize(self) -> List[Token]:
         while self.pos < len(self.source):
@@ -139,6 +170,12 @@ class Tokenizer:
             elif ch == ']':
                 self.tokens.append(Token(TokenType.RBRACKET, ch, self.line, self.column))
                 self.advance()
+            elif ch == '{':
+                self.tokens.append(Token(TokenType.LBRACE, ch, self.line, self.column))
+                self.advance()
+            elif ch == '}':
+                self.tokens.append(Token(TokenType.RBRACE, ch, self.line, self.column))
+                self.advance()
             elif ch == ',':
                 self.tokens.append(Token(TokenType.COMMA, ch, self.line, self.column))
                 self.advance()
@@ -148,10 +185,16 @@ class Tokenizer:
             elif ch == ':':
                 self.tokens.append(Token(TokenType.COLON, ch, self.line, self.column))
                 self.advance()
-            elif ch == '.' and self.peek(1) == '.':
-                self.tokens.append(Token(TokenType.DOTDOT, '..', self.line, self.column))
-                self.advance()
-                self.advance()
+            elif ch == '"':
+                self.tokens.append(self.read_string())
+            elif ch == '.':
+                if self.peek(1) == '.':
+                    self.tokens.append(Token(TokenType.DOTDOT, '..', self.line, self.column))
+                    self.advance()
+                    self.advance()
+                else:
+                    self.tokens.append(Token(TokenType.DOT, '.', self.line, self.column))
+                    self.advance()
             else:
                 self.tokens.append(self.read_operator())
 

@@ -5,7 +5,8 @@ from calc_ast import (
     AssignmentNode, FunctionCallNode, FunctionDefNode, OperatorDeclareNode,
     BlockNode, OperatorTable, Associativity, TernaryIfNode,
     ListNode, RangeNode, DoBlockNode, IndexNode, SliceNode,
-    ForNode, IfBlockNode, WhileBlockNode
+    ForNode, IfBlockNode, WhileBlockNode,
+    StringNode, RecordNode, DotAccessNode, FieldAssignNode
 )
 
 
@@ -87,6 +88,11 @@ class Parser:
             return self.parse_for_block()
         if self.check(TokenType.IDENTIFIER, 'if') and self.peek(1).type != TokenType.LPAREN:
             return self.parse_if_block()
+        if (self.check(TokenType.IDENTIFIER)
+                and self.peek(1).type == TokenType.DOT
+                and self.peek(2).type == TokenType.IDENTIFIER
+                and self.peek(3).type == TokenType.ASSIGN):
+            return self.parse_field_assignment()
         if self.check(TokenType.IDENTIFIER) and self.peek(1).type == TokenType.ASSIGN:
             return self.parse_assignment()
         if self.check(TokenType.DO):
@@ -163,6 +169,33 @@ class Parser:
         self.expect(TokenType.END)
         body = DoBlockNode(statements=stmts, is_local_scope=False, **loc)
         return ForNode(var_name, iterable, body, accum_var, accum_init, **loc)
+
+    def parse_field_assignment(self) -> FieldAssignNode:
+        loc = self._loc()
+        target_token = self.expect(TokenType.IDENTIFIER)
+        target = IdentifierNode(target_token.value, line=target_token.line, col=target_token.column)
+        self.expect(TokenType.DOT)
+        field_token = self.expect(TokenType.IDENTIFIER)
+        self.expect(TokenType.ASSIGN)
+        value = self.parse_expression()
+        return FieldAssignNode(target, field_token.value, value, **loc)
+
+    def parse_record(self) -> RecordNode:
+        loc = self._loc()
+        self.expect(TokenType.LBRACE)
+        pairs = []
+        if not self.check(TokenType.RBRACE):
+            key_token = self.expect(TokenType.IDENTIFIER)
+            self.expect(TokenType.COLON)
+            value = self.parse_expression()
+            pairs.append((key_token.value, value))
+            while self.match(TokenType.COMMA):
+                key_token = self.expect(TokenType.IDENTIFIER)
+                self.expect(TokenType.COLON)
+                value = self.parse_expression()
+                pairs.append((key_token.value, value))
+        self.expect(TokenType.RBRACE)
+        return RecordNode(pairs=pairs, **loc)
 
     def parse_operator_declare(self) -> OperatorDeclareNode:
         loc = self._loc()
@@ -252,6 +285,13 @@ class Parser:
         while True:
             token = self.current()
 
+            if token.type == TokenType.DOT:
+                loc = self._loc()
+                self.advance()
+                field_token = self.expect(TokenType.IDENTIFIER)
+                left = DotAccessNode(left, field_token.value, **loc)
+                continue
+
             if token.type == TokenType.LBRACKET:
                 loc = self._loc()
                 self.advance()
@@ -330,6 +370,13 @@ class Parser:
             self.advance()
             return NumberNode(float(token.value), line=token.line, col=token.column)
 
+        if token.type == TokenType.STRING:
+            self.advance()
+            return StringNode(token.value, line=token.line, col=token.column)
+
+        if token.type == TokenType.IDENTIFIER and token.value == 'if' and self.peek(1).type != TokenType.LPAREN:
+            return self.parse_if_block()
+
         if token.type == TokenType.IDENTIFIER:
             self.advance()
             if self.check(TokenType.LPAREN):
@@ -345,6 +392,9 @@ class Parser:
         if token.type == TokenType.LBRACKET:
             return self.parse_list()
 
+        if token.type == TokenType.LBRACE:
+            return self.parse_record()
+
         if token.type == TokenType.DO:
             return self.parse_do_block()
 
@@ -353,9 +403,6 @@ class Parser:
 
         if token.type == TokenType.WHILE:
             return self.parse_while_block()
-
-        if token.type == TokenType.IDENTIFIER and token.value == 'if' and self.peek(1).type != TokenType.LPAREN:
-            return self.parse_if_block()
 
         if token.type == TokenType.OPERATOR:
             if token.value in ('+', '-', '!', '~'):

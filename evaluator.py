@@ -6,7 +6,8 @@ from calc_ast import (
     AssignmentNode, FunctionCallNode, FunctionDefNode, OperatorDeclareNode,
     BlockNode, OperatorTable, Associativity, TernaryIfNode,
     ListNode, RangeNode, DoBlockNode, IndexNode, SliceNode,
-    ForNode, IfBlockNode, WhileBlockNode
+    ForNode, IfBlockNode, WhileBlockNode,
+    StringNode, RecordNode, DotAccessNode, FieldAssignNode
 )
 from scope import Scope, FunctionValue
 from tokenizer import Token
@@ -93,6 +94,13 @@ class Evaluator:
             'int': self._builtin_int,
             'type': self._builtin_type,
             'list': self._builtin_list,
+            'reduce': self._builtin_reduce,
+            'sort': self._builtin_sort,
+            'sort_by': self._builtin_sort_by,
+            'reverse': self._builtin_reverse,
+            'keys': self._builtin_keys,
+            'values': self._builtin_values,
+            'has_key': self._builtin_has_key,
         }
         default_builtins.update(builtin_funcs)
         for name, func in default_builtins.items():
@@ -109,8 +117,15 @@ class Evaluator:
         return args[0] if len(args) == 1 else list(args)
 
     def _format_val(self, v):
+        if isinstance(v, dict):
+            items = []
+            for k, val in v.items():
+                items.append(f"{k}: {self._format_val(val)}")
+            return '{' + ', '.join(items) + '}'
         if isinstance(v, list):
             return '[' + ', '.join(self._format_val(x) for x in v) + ']'
+        if isinstance(v, str):
+            return f'"{v}"'
         if isinstance(v, float) and v == int(v):
             return str(int(v))
         return str(v)
@@ -137,7 +152,9 @@ class Evaluator:
     def _builtin_len(self, x):
         if isinstance(x, list):
             return len(x)
-        raise TypeError_("len() expects a list")
+        if isinstance(x, dict):
+            return len(x)
+        raise TypeError_("len() expects a list or record")
 
     def _builtin_sum(self, x):
         if isinstance(x, list):
@@ -201,6 +218,8 @@ class Evaluator:
         return int(x)
 
     def _builtin_type(self, x):
+        if isinstance(x, dict):
+            return "record"
         if isinstance(x, list):
             return "list"
         if isinstance(x, float):
@@ -213,6 +232,52 @@ class Evaluator:
 
     def _builtin_list(self, *args):
         return list(args)
+
+    def _builtin_reduce(self, func, init, lst, node: ASTNode = None):
+        if not isinstance(lst, list):
+            raise TypeError_("reduce() expects a list as third argument", node)
+        accum = init
+        for item in lst:
+            accum = self._apply_func(func, [accum, item], node)
+        return accum
+
+    def _builtin_sort(self, lst, node: ASTNode = None):
+        if not isinstance(lst, list):
+            raise TypeError_("sort() expects a list", node)
+        try:
+            return sorted(lst)
+        except TypeError:
+            raise TypeError_("sort() elements must be comparable", node)
+
+    def _builtin_sort_by(self, func, lst, node: ASTNode = None):
+        if not isinstance(lst, list):
+            raise TypeError_("sort_by() expects a list as second argument", node)
+        decorated = []
+        for item in lst:
+            key = self._apply_func(func, [item], node)
+            decorated.append((key, item))
+        decorated.sort(key=lambda x: x[0])
+        return [item for _, item in decorated]
+
+    def _builtin_reverse(self, lst, node: ASTNode = None):
+        if not isinstance(lst, list):
+            raise TypeError_("reverse() expects a list", node)
+        return list(reversed(lst))
+
+    def _builtin_keys(self, record, node: ASTNode = None):
+        if not isinstance(record, dict):
+            raise TypeError_("keys() expects a record", node)
+        return list(record.keys())
+
+    def _builtin_values(self, record, node: ASTNode = None):
+        if not isinstance(record, dict):
+            raise TypeError_("values() expects a record", node)
+        return list(record.values())
+
+    def _builtin_has_key(self, record, key, node: ASTNode = None):
+        if not isinstance(record, dict):
+            raise TypeError_("has_key() expects a record as first argument", node)
+        return 1.0 if key in record else 0.0
 
     def _apply_func(self, func, args, node: ASTNode = None):
         if callable(func) and not isinstance(func, FunctionValue):
@@ -549,9 +614,13 @@ class Evaluator:
 
     def eval_IndexNode(self, node: IndexNode) -> Any:
         target = self.evaluate(node.target)
-        if not isinstance(target, list):
-            raise TypeError_("Cannot index non-list value", node)
         idx_val = self.evaluate(node.index)
+        if isinstance(target, dict):
+            if idx_val not in target:
+                raise UndefinedNameError(f"Record has no key '{idx_val}'", node)
+            return target[idx_val]
+        if not isinstance(target, list):
+            raise TypeError_("Cannot index non-list/non-record value", node)
         idx = int(idx_val)
         if idx < 0 or idx >= len(target):
             raise IndexError_(f"Index {idx} out of range (len={len(target)})", node)
@@ -616,5 +685,30 @@ class Evaluator:
         if node.accum_var:
             return accum_value
         return result
+
+    def eval_StringNode(self, node: StringNode) -> str:
+        return node.value
+
+    def eval_RecordNode(self, node: RecordNode) -> dict:
+        result = {}
+        for key, value_node in node.pairs:
+            result[key] = self.evaluate(value_node)
+        return result
+
+    def eval_DotAccessNode(self, node: DotAccessNode) -> Any:
+        target = self.evaluate(node.target)
+        if isinstance(target, dict):
+            if node.field not in target:
+                raise UndefinedNameError(f"Record has no field '{node.field}'", node)
+            return target[node.field]
+        raise TypeError_("Cannot access field on non-record value", node)
+
+    def eval_FieldAssignNode(self, node: FieldAssignNode) -> Any:
+        target = self.evaluate(node.target)
+        if not isinstance(target, dict):
+            raise TypeError_("Cannot set field on non-record value", node)
+        value = self.evaluate(node.value)
+        target[node.field] = value
+        return value
 
 
