@@ -9,6 +9,8 @@ class TokenType(Enum):
     OPERATOR = auto()
     LPAREN = auto()
     RPAREN = auto()
+    LBRACKET = auto()
+    RBRACKET = auto()
     COMMA = auto()
     ASSIGN = auto()
     FUN = auto()
@@ -17,6 +19,9 @@ class TokenType(Enum):
     RIGHT_ASSOC = auto()
     QUESTION = auto()
     COLON = auto()
+    DO = auto()
+    END = auto()
+    DOTDOT = auto()
     EOF = auto()
 
 
@@ -58,7 +63,7 @@ class Tokenizer:
             self.advance()
 
     def skip_comment(self):
-        if self.peek() == '#' and self.peek(1) == '!':
+        if self.peek() == '#':
             while self.peek() and self.peek() != '\n':
                 self.advance()
 
@@ -66,7 +71,7 @@ class Tokenizer:
         start_col = self.column
         start_pos = self.pos
         has_dot = False
-        while self.peek() and (self.peek().isdigit() or (self.peek() == '.' and not has_dot)):
+        while self.peek() and (self.peek().isdigit() or (self.peek() == '.' and not has_dot and self.peek(1) and self.peek(1).isdigit())):
             if self.peek() == '.':
                 has_dot = True
             self.advance()
@@ -84,6 +89,8 @@ class Tokenizer:
             'op': TokenType.OP_DECLARE,
             'left': TokenType.LEFT_ASSOC,
             'right': TokenType.RIGHT_ASSOC,
+            'do': TokenType.DO,
+            'end': TokenType.END,
         }
         token_type = keyword_map.get(value, TokenType.IDENTIFIER)
         return Token(token_type, value, self.line, start_col)
@@ -103,6 +110,7 @@ class Tokenizer:
         while self.pos < len(self.source):
             self.skip_whitespace()
             self.skip_comment()
+            self.skip_whitespace()
             if self.pos >= len(self.source):
                 break
 
@@ -117,6 +125,12 @@ class Tokenizer:
             elif ch == ')':
                 self.tokens.append(Token(TokenType.RPAREN, ch, self.line, self.column))
                 self.advance()
+            elif ch == '[':
+                self.tokens.append(Token(TokenType.LBRACKET, ch, self.line, self.column))
+                self.advance()
+            elif ch == ']':
+                self.tokens.append(Token(TokenType.RBRACKET, ch, self.line, self.column))
+                self.advance()
             elif ch == ',':
                 self.tokens.append(Token(TokenType.COMMA, ch, self.line, self.column))
                 self.advance()
@@ -125,6 +139,10 @@ class Tokenizer:
                 self.advance()
             elif ch == ':':
                 self.tokens.append(Token(TokenType.COLON, ch, self.line, self.column))
+                self.advance()
+            elif ch == '.' and self.peek(1) == '.':
+                self.tokens.append(Token(TokenType.DOTDOT, '..', self.line, self.column))
+                self.advance()
                 self.advance()
             else:
                 self.tokens.append(self.read_operator())

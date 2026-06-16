@@ -1,11 +1,11 @@
 from typing import Any, Callable, Optional
 import sys
-from tokenizer import Tokenizer, Token
+from tokenizer import Tokenizer, Token, TokenType
 from parser import Parser, ParseError
 from evaluator import (
     Evaluator, EvaluationError, RecursionLimitError,
     DivideByZeroError, ArityMismatchError, UndefinedNameError,
-    UndefinedOperatorError
+    UndefinedOperatorError, IndexError_, TypeError_
 )
 from calc_ast import OperatorTable, Associativity, OperatorDeclareNode
 
@@ -43,9 +43,57 @@ def format_error_with_source(source: str, line_num: int, col_num: int,
         if actual_line == line_num:
             pointer_col = max(1, col_num)
             padding = ' ' * (len(prefix) + pointer_col - 1)
-            output_lines.append(padding + '^')
+            output_lines.append(padding + '^~~')
 
     return '\n'.join(output_lines)
+
+
+def is_input_incomplete(source: str) -> bool:
+    tokens = Tokenizer(source).tokenize()
+    depth_paren = 0
+    depth_bracket = 0
+    depth_do = 0
+    last_meaningful = None
+    saw_fun = False
+    saw_op = False
+    saw_assign = False
+
+    for tok in tokens:
+        if tok.type == TokenType.EOF:
+            continue
+        if tok.type == TokenType.LPAREN:
+            depth_paren += 1
+        elif tok.type == TokenType.RPAREN:
+            depth_paren -= 1
+        elif tok.type == TokenType.LBRACKET:
+            depth_bracket += 1
+        elif tok.type == TokenType.RBRACKET:
+            depth_bracket -= 1
+        elif tok.type == TokenType.DO:
+            depth_do += 1
+        elif tok.type == TokenType.END:
+            depth_do -= 1
+        elif tok.type == TokenType.FUN:
+            saw_fun = True
+        elif tok.type == TokenType.OP_DECLARE:
+            saw_op = True
+        elif tok.type == TokenType.ASSIGN:
+            saw_assign = True
+        last_meaningful = tok
+
+    if depth_paren > 0 or depth_bracket > 0 or depth_do > 0:
+        return True
+
+    if saw_fun and not saw_assign and depth_do == 0:
+        if last_meaningful and last_meaningful.type == TokenType.RPAREN:
+            return True
+
+    if saw_op and last_meaningful and last_meaningful.type in (
+        TokenType.LEFT_ASSOC, TokenType.RIGHT_ASSOC
+    ):
+        return True
+
+    return False
 
 
 class CalculatorEngine:
@@ -62,11 +110,11 @@ class CalculatorEngine:
     def _patch_evaluator(self):
         original_apply = self.evaluator.apply_binary_operator
 
-        def patched_apply(op: str, left: Any, right: Any) -> Any:
+        def patched_apply(op: str, left: Any, right: Any, node=None) -> Any:
             custom_semantic = self.op_semantics.get(op)
             if custom_semantic is not None:
                 return custom_semantic(left, right)
-            return original_apply(op, left, right)
+            return original_apply(op, left, right, node)
 
         self.evaluator.apply_binary_operator = patched_apply
 
@@ -108,9 +156,8 @@ class CalculatorEngine:
         return format_error_with_source(source, line, col, str(error), "SyntaxError")
 
     def _format_eval_error(self, source: str, error: EvaluationError) -> str:
-        token = getattr(error, 'token', None)
-        line = token.line if token else 1
-        col = token.column if token else 1
+        line = error.line if error.line else 1
+        col = error.col if error.col else 1
 
         if isinstance(error, RecursionLimitError):
             type_name = "RecursionError"
@@ -122,6 +169,10 @@ class CalculatorEngine:
             type_name = "NameError"
         elif isinstance(error, UndefinedOperatorError):
             type_name = "OperatorError"
+        elif isinstance(error, IndexError_):
+            type_name = "IndexError"
+        elif isinstance(error, TypeError_):
+            type_name = "TypeError"
         else:
             type_name = "RuntimeError"
 
@@ -131,12 +182,10 @@ class CalculatorEngine:
                          associativity: str = 'left',
                          semantic: Callable[[Any, Any], Any] = None) -> None:
         assoc = Associativity.LEFT if associativity.lower() == 'left' else Associativity.RIGHT
-
         try:
             self.op_table.add_operator(symbol, precedence, assoc)
         except ValueError as e:
             raise ValueError(str(e)) from e
-
         if semantic is not None:
             self.define_operator_semantic(symbol, semantic)
 
@@ -161,32 +210,65 @@ class CalculatorEngine:
         self._patch_evaluator()
 
 
+def _format_result(val):
+    if isinstance(val, list):
+        items = []
+        for x in val:
+            if isinstance(x, list):
+                items.append(_format_result(x))
+            elif isinstance(x, float) and x == int(x):
+                items.append(str(int(x)))
+            else:
+                items.append(str(x))
+        return '[' + ', '.join(items) + ']'
+    if isinstance(val, float) and val == int(val):
+        return str(int(val))
+    return str(val)
+
+
 def run_repl():
     calc = CalculatorEngine()
-    print("Custom Operator Calculator REPL (v2)")
+    print("Custom Operator Calculator REPL (v3)")
     print("====================================")
     print("Syntax:")
     print("  op <sym>, <prec>, <left/right> (a, b) = <body>  - declare operator with rule")
-    print("  op <sym>, <prec>, <left/right>                   - declare operator syntax only")
-    print("  fun <name>(<params>) = <body>                    - define function")
+    print("  fun <name>(<params>) = <body>                    - define function (single-line)")
+    print("  fun <name>(<params>) do ... end                  - define function (multi-line)")
+    print("  do <stmts> end                                    - block with local scope")
     print("  <cond> ? <then> : <else>                         - ternary conditional")
+    print("  [1, 2, 3]                                        - list literal")
+    print("  1..10                                            - range")
+    print("  map(f, [1,2,3]) | filter(f, lst) | sum(lst)     - list operations")
     print("  <var> = <expr>                                   - assign variable")
     print("  <expr>                                           - evaluate expression")
-    print("REPL commands:  :ops  :reset  :maxrec <n>  :quit")
+    print("  # comment                                        - line comment")
+    print("REPL: :ops  :reset  :maxrec <n>  :quit")
+    print("  Multi-line: type 'do', 'fun f(...) do', '[', '(' then continue on next lines")
     print()
 
     while True:
         try:
-            line = input(">>> ").strip()
-            if not line:
+            lines = []
+            prompt = ">>> "
+            while True:
+                line = input(prompt).rstrip()
+                lines.append(line)
+                text = '\n'.join(lines)
+                if not is_input_incomplete(text):
+                    break
+                prompt = "... "
+
+            source = '\n'.join(lines)
+            source_stripped = source.strip()
+            if not source_stripped:
                 continue
-            if line == ':quit':
+            if source_stripped == ':quit':
                 break
-            if line == ':reset':
+            if source_stripped == ':reset':
                 calc.reset()
                 print("Calculator reset.")
                 continue
-            if line == ':ops':
+            if source_stripped == ':ops':
                 ops = calc.list_operators()
                 print(f"  {'Symbol':>6}  {'Prec':>4}  {'Assoc':>5}  {'Type':>8}  {'Semantic':>8}")
                 print("  " + "-" * 45)
@@ -197,8 +279,8 @@ def run_repl():
                     sem = "yes" if has_sem else "no"
                     print(f"  {op.symbol:>6}  {op.precedence:>4}  {assoc:>5}  {status:>8}  {sem:>8}")
                 continue
-            if line.startswith(':maxrec'):
-                parts = line.split()
+            if source_stripped.startswith(':maxrec'):
+                parts = source_stripped.split()
                 if len(parts) == 2:
                     try:
                         n = int(parts[1])
@@ -210,12 +292,12 @@ def run_repl():
                     print("Usage: :maxrec <positive_integer>")
                 continue
 
-            result = calc.execute(line)
+            result = calc.execute(source)
             if result is not None:
                 if isinstance(result, str) and result.startswith("Operator '"):
                     print(result)
                 else:
-                    print(result)
+                    print(_format_result(result))
         except (SyntaxError, RuntimeError, ValueError) as e:
             print(str(e))
         except KeyboardInterrupt:

@@ -1,9 +1,10 @@
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, List
 import sys
 from calc_ast import (
     ASTNode, NumberNode, IdentifierNode, BinaryOpNode, UnaryOpNode,
     AssignmentNode, FunctionCallNode, FunctionDefNode, OperatorDeclareNode,
-    BlockNode, OperatorTable, Associativity, TernaryIfNode
+    BlockNode, OperatorTable, Associativity, TernaryIfNode,
+    ListNode, RangeNode, DoBlockNode
 )
 from scope import Scope, FunctionValue
 from tokenizer import Token
@@ -13,10 +14,12 @@ MAX_RECURSION_DEPTH = 500
 
 
 class EvaluationError(Exception):
-    def __init__(self, message: str, token: Token = None):
-        self.token = token
-        if token:
-            message = f"{message} at line {token.line}, column {token.column}"
+    def __init__(self, message: str, node: ASTNode = None):
+        self.node = node
+        self.line = node.line if node and node.line else 0
+        self.col = node.col if node and node.col else 0
+        if self.line and self.col:
+            message = f"{message} at line {self.line}, column {self.col}"
         super().__init__(message)
 
 
@@ -40,6 +43,14 @@ class UndefinedOperatorError(EvaluationError):
     pass
 
 
+class IndexError_(EvaluationError):
+    pass
+
+
+class TypeError_(EvaluationError):
+    pass
+
+
 class Evaluator:
     def __init__(self, op_table: OperatorTable, builtin_functions: dict = None,
                  on_operator_declared: Callable[[str, Callable], None] = None):
@@ -49,6 +60,7 @@ class Evaluator:
         self._on_operator_declared = on_operator_declared
         self._recursion_depth = 0
         self._max_recursion = MAX_RECURSION_DEPTH
+        self._call_stack: List[str] = []
         self._init_builtins(builtin_functions or {})
 
     def _init_builtins(self, builtin_funcs: dict):
@@ -59,14 +71,40 @@ class Evaluator:
             'pow': self._builtin_pow,
             'max': self._builtin_max,
             'min': self._builtin_min,
+            'len': self._builtin_len,
+            'sum': self._builtin_sum,
+            'map': self._builtin_map,
+            'filter': self._builtin_filter,
+            'range': self._builtin_range,
+            'push': self._builtin_push,
+            'head': self._builtin_head,
+            'tail': self._builtin_tail,
+            'nth': self._builtin_nth,
+            'str': self._builtin_str,
+            'int': self._builtin_int,
+            'type': self._builtin_type,
+            'list': self._builtin_list,
         }
         default_builtins.update(builtin_funcs)
         for name, func in default_builtins.items():
             self.global_scope.variables[name] = func
 
     def _builtin_print(self, *args):
-        print(*args)
-        return args[0] if args else None
+        formatted = []
+        for a in args:
+            if isinstance(a, list):
+                formatted.append('[' + ', '.join(self._format_val(x) for x in a) + ']')
+            else:
+                formatted.append(self._format_val(a))
+        print(*formatted)
+        return args[0] if len(args) == 1 else list(args)
+
+    def _format_val(self, v):
+        if isinstance(v, list):
+            return '[' + ', '.join(self._format_val(x) for x in v) + ']'
+        if isinstance(v, float) and v == int(v):
+            return str(int(v))
+        return str(v)
 
     def _builtin_abs(self, x):
         return abs(x)
@@ -78,38 +116,166 @@ class Evaluator:
         return x ** y
 
     def _builtin_max(self, *args):
+        if len(args) == 1 and isinstance(args[0], list):
+            return max(args[0])
         return max(args)
 
     def _builtin_min(self, *args):
+        if len(args) == 1 and isinstance(args[0], list):
+            return min(args[0])
         return min(args)
+
+    def _builtin_len(self, x):
+        if isinstance(x, list):
+            return len(x)
+        raise TypeError_("len() expects a list")
+
+    def _builtin_sum(self, x):
+        if isinstance(x, list):
+            return sum(x)
+        raise TypeError_("sum() expects a list")
+
+    def _builtin_map(self, func, lst):
+        if not isinstance(lst, list):
+            raise TypeError_("map() expects a list as second argument")
+        result = []
+        for item in lst:
+            result.append(self._apply_func(func, [item]))
+        return result
+
+    def _builtin_filter(self, func, lst):
+        if not isinstance(lst, list):
+            raise TypeError_("filter() expects a list as second argument")
+        result = []
+        for item in lst:
+            val = self._apply_func(func, [item])
+            if val:
+                result.append(item)
+        return result
+
+    def _builtin_range(self, *args):
+        if len(args) == 1:
+            return list(range(int(args[0])))
+        if len(args) == 2:
+            return list(range(int(args[0]), int(args[1])))
+        if len(args) == 3:
+            return list(range(int(args[0]), int(args[1]), int(args[2])))
+        raise ArityMismatchError("range() expects 1-3 arguments")
+
+    def _builtin_push(self, lst, item):
+        if not isinstance(lst, list):
+            raise TypeError_("push() expects a list as first argument")
+        return lst + [item]
+
+    def _builtin_head(self, lst):
+        if not isinstance(lst, list) or len(lst) == 0:
+            raise IndexError_("head() of empty list")
+        return lst[0]
+
+    def _builtin_tail(self, lst):
+        if not isinstance(lst, list) or len(lst) == 0:
+            raise IndexError_("tail() of empty list")
+        return lst[1:]
+
+    def _builtin_nth(self, lst, n):
+        if not isinstance(lst, list):
+            raise TypeError_("nth() expects a list")
+        idx = int(n)
+        if idx < 0 or idx >= len(lst):
+            raise IndexError_(f"nth() index {idx} out of range (len={len(lst)})")
+        return lst[idx]
+
+    def _builtin_str(self, x):
+        return self._format_val(x)
+
+    def _builtin_int(self, x):
+        return int(x)
+
+    def _builtin_type(self, x):
+        if isinstance(x, list):
+            return "list"
+        if isinstance(x, float):
+            return "number"
+        if isinstance(x, str):
+            return "string"
+        if callable(x):
+            return "function"
+        return "unknown"
+
+    def _builtin_list(self, *args):
+        return list(args)
+
+    def _apply_func(self, func, args):
+        if callable(func) and not isinstance(func, FunctionValue):
+            return func(*args)
+        if isinstance(func, FunctionValue):
+            if len(args) != len(func.params):
+                raise ArityMismatchError(
+                    f"Function expects {len(func.params)} args, got {len(args)}"
+                )
+            self._enter_call(func.name)
+            try:
+                call_scope = func.closure.create_child_scope(f"call_{func.name}")
+                for param, arg_val in zip(func.params, args):
+                    call_scope.define_variable(param, arg_val)
+                call_scope.define_variable(func.name, func)
+                prev = self.current_scope
+                self.current_scope = call_scope
+                try:
+                    return self.evaluate(func.body)
+                finally:
+                    self.current_scope = prev
+            finally:
+                self._exit_call()
+        raise TypeError_(f"Cannot call non-function value")
 
     def set_max_recursion(self, depth: int):
         self._max_recursion = depth
 
     def _enter_call(self, func_name: str):
         self._recursion_depth += 1
+        self._call_stack.append(func_name)
         if self._recursion_depth > self._max_recursion:
+            stack_trace = " -> ".join(self._call_stack[-10:])
             raise RecursionLimitError(
-                f"Recursion depth exceeded maximum ({self._max_recursion}) "
-                f"while calling '{func_name}'"
+                f"Recursion depth exceeded ({self._max_recursion}) in call chain: {stack_trace}"
             )
 
     def _exit_call(self):
         self._recursion_depth -= 1
+        if self._call_stack:
+            self._call_stack.pop()
 
     def evaluate(self, node: ASTNode) -> Any:
-        method = f'eval_{type(node).__name__}'
-        evaluator = getattr(self, method, self.eval_default)
-        return evaluator(node)
+        try:
+            method = f'eval_{type(node).__name__}'
+            evaluator = getattr(self, method, self.eval_default)
+            return evaluator(node)
+        except EvaluationError:
+            raise
+        except Exception as e:
+            raise EvaluationError(f"{type(e).__name__}: {e}", node)
 
     def eval_default(self, node: ASTNode) -> Any:
-        raise EvaluationError(f"Unknown AST node type: {type(node).__name__}")
+        raise EvaluationError(f"Unknown AST node type: {type(node).__name__}", node)
 
     def eval_BlockNode(self, node: BlockNode) -> Any:
         result = None
         for stmt in node.statements:
             result = self.evaluate(stmt)
         return result
+
+    def eval_DoBlockNode(self, node: DoBlockNode) -> Any:
+        block_scope = self.current_scope.create_child_scope("do_block")
+        prev = self.current_scope
+        self.current_scope = block_scope
+        try:
+            result = None
+            for stmt in node.statements:
+                result = self.evaluate(stmt)
+            return result
+        finally:
+            self.current_scope = prev
 
     def eval_NumberNode(self, node: NumberNode) -> float:
         return node.value
@@ -118,7 +284,7 @@ class Evaluator:
         try:
             return self.current_scope.lookup_variable(node.name)
         except NameError:
-            raise UndefinedNameError(f"Undefined variable '{node.name}'")
+            raise UndefinedNameError(f"Undefined variable '{node.name}'", node)
 
     def eval_TernaryIfNode(self, node: TernaryIfNode) -> Any:
         cond = self.evaluate(node.cond)
@@ -126,6 +292,16 @@ class Evaluator:
             return self.evaluate(node.then_expr)
         else:
             return self.evaluate(node.else_expr)
+
+    def eval_ListNode(self, node: ListNode) -> list:
+        return [self.evaluate(elem) for elem in node.elements]
+
+    def eval_RangeNode(self, node: RangeNode) -> list:
+        start = self.evaluate(node.start)
+        end = self.evaluate(node.end)
+        if not (isinstance(start, (int, float)) and isinstance(end, (int, float))):
+            raise TypeError_("Range bounds must be numbers", node)
+        return list(range(int(start), int(end)))
 
     def eval_BinaryOpNode(self, node: BinaryOpNode) -> Any:
         if node.op == '&&':
@@ -140,14 +316,41 @@ class Evaluator:
                 return 1.0
             right = self.evaluate(node.right)
             return 1.0 if right else 0.0
+        if node.op == '+' and self._either_is_list(node):
+            left = self.evaluate(node.left)
+            right = self.evaluate(node.right)
+            if isinstance(left, list) and isinstance(right, list):
+                return left + right
+            raise TypeError_("List concatenation requires two lists", node)
 
         left = self.evaluate(node.left)
         right = self.evaluate(node.right)
-        return self.apply_binary_operator(node.op, left, right)
+        return self.apply_binary_operator(node.op, left, right, node)
+
+    def _either_is_list(self, node: BinaryOpNode) -> bool:
+        if isinstance(node.left, ListNode) or isinstance(node.right, ListNode):
+            return True
+        if isinstance(node.left, RangeNode) or isinstance(node.right, RangeNode):
+            return True
+        if isinstance(node.left, IdentifierNode):
+            try:
+                val = self.current_scope.lookup_variable(node.left.name)
+                if isinstance(val, list):
+                    return True
+            except NameError:
+                pass
+        if isinstance(node.right, IdentifierNode):
+            try:
+                val = self.current_scope.lookup_variable(node.right.name)
+                if isinstance(val, list):
+                    return True
+            except NameError:
+                pass
+        return False
 
     def eval_UnaryOpNode(self, node: UnaryOpNode) -> Any:
         operand = self.evaluate(node.operand)
-        return self.apply_unary_operator(node.op, operand)
+        return self.apply_unary_operator(node.op, operand, node)
 
     def eval_AssignmentNode(self, node: AssignmentNode) -> Any:
         value = self.evaluate(node.value)
@@ -162,17 +365,22 @@ class Evaluator:
         return func_value
 
     def eval_FunctionCallNode(self, node: FunctionCallNode) -> Any:
-        func = self._lookup_callable(node.name)
+        func = self._lookup_callable(node.name, node)
 
         if callable(func) and not isinstance(func, FunctionValue):
             arg_values = [self.evaluate(arg) for arg in node.args]
-            return func(*arg_values)
+            try:
+                return func(*arg_values)
+            except TypeError as e:
+                raise ArityMismatchError(
+                    f"Function '{node.name}': {e}", node
+                )
 
         if isinstance(func, FunctionValue):
             if len(node.args) != len(func.params):
                 raise ArityMismatchError(
                     f"Function '{node.name}' expects {len(func.params)} arguments, "
-                    f"got {len(node.args)}"
+                    f"got {len(node.args)}", node
                 )
 
             self._enter_call(node.name)
@@ -192,9 +400,9 @@ class Evaluator:
                 self._exit_call()
             return result
 
-        raise UndefinedNameError(f"'{node.name}' is not callable")
+        raise UndefinedNameError(f"'{node.name}' is not callable", node)
 
-    def _lookup_callable(self, name: str) -> Any:
+    def _lookup_callable(self, name: str, node: ASTNode = None) -> Any:
         try:
             return self.current_scope.lookup_variable(name)
         except NameError:
@@ -202,13 +410,13 @@ class Evaluator:
         try:
             return self.current_scope.lookup_function(name)
         except NameError:
-            raise UndefinedNameError(f"Undefined function '{name}'")
+            raise UndefinedNameError(f"Undefined function '{name}'", node)
 
     def eval_OperatorDeclareNode(self, node: OperatorDeclareNode) -> Any:
         try:
             self.op_table.add_operator(node.symbol, node.precedence, node.associativity)
         except ValueError as e:
-            raise EvaluationError(str(e))
+            raise EvaluationError(str(e), node)
 
         if node.body is not None and node.left_param and node.right_param:
             closure = self.current_scope
@@ -238,38 +446,63 @@ class Evaluator:
             + (" with semantic" if node.body else "")
         )
 
-    def apply_binary_operator(self, op: str, left: Any, right: Any) -> Any:
+    def apply_binary_operator(self, op: str, left: Any, right: Any,
+                               node: ASTNode = None) -> Any:
         if not (isinstance(left, (int, float)) and isinstance(right, (int, float))):
-            raise EvaluationError(f"Operator '{op}' requires numeric operands")
+            raise TypeError_(
+                f"Operator '{op}' requires numeric operands, got "
+                f"{type(left).__name__} and {type(right).__name__}", node
+            )
 
-        operations = {
-            '+': lambda a, b: a + b,
-            '-': lambda a, b: a - b,
-            '*': lambda a, b: a * b,
-            '/': self._safe_div,
-            '%': self._safe_mod,
-            '**': lambda a, b: a ** b,
-            '<<': lambda a, b: int(a) << int(b),
-            '>>': lambda a, b: int(a) >> int(b),
-            '&': lambda a, b: int(a) & int(b),
-            '|': lambda a, b: int(a) | int(b),
-            '^': lambda a, b: int(a) ^ int(b),
-            '==': lambda a, b: 1.0 if a == b else 0.0,
-            '!=': lambda a, b: 1.0 if a != b else 0.0,
-            '<': lambda a, b: 1.0 if a < b else 0.0,
-            '>': lambda a, b: 1.0 if a > b else 0.0,
-            '<=': lambda a, b: 1.0 if a <= b else 0.0,
-            '>=': lambda a, b: 1.0 if a >= b else 0.0,
-        }
+        try:
+            if op == '+':
+                return left + right
+            if op == '-':
+                return left - right
+            if op == '*':
+                return left * right
+            if op == '/':
+                if right == 0:
+                    raise DivideByZeroError("Division by zero", node)
+                return left / right
+            if op == '%':
+                if right == 0:
+                    raise DivideByZeroError("Modulo by zero", node)
+                return left % right
+            if op == '**':
+                return left ** right
+            if op == '<<':
+                return int(left) << int(right)
+            if op == '>>':
+                return int(left) >> int(right)
+            if op == '&':
+                return int(left) & int(right)
+            if op == '|':
+                return int(left) | int(right)
+            if op == '^':
+                return int(left) ^ int(right)
+            if op == '==':
+                return 1.0 if left == right else 0.0
+            if op == '!=':
+                return 1.0 if left != right else 0.0
+            if op == '<':
+                return 1.0 if left < right else 0.0
+            if op == '>':
+                return 1.0 if left > right else 0.0
+            if op == '<=':
+                return 1.0 if left <= right else 0.0
+            if op == '>=':
+                return 1.0 if left >= right else 0.0
+        except EvaluationError:
+            raise
+        except Exception as e:
+            raise EvaluationError(f"Operator '{op}' failed: {e}", node)
 
-        if op in operations:
-            return operations[op](left, right)
+        raise UndefinedOperatorError(f"Operator '{op}' is not implemented (semantic not defined)", node)
 
-        raise UndefinedOperatorError(f"Operator '{op}' is not implemented (semantic not defined)")
-
-    def apply_unary_operator(self, op: str, operand: Any) -> Any:
+    def apply_unary_operator(self, op: str, operand: Any, node: ASTNode = None) -> Any:
         if not isinstance(operand, (int, float)):
-            raise EvaluationError(f"Unary operator '{op}' requires numeric operand")
+            raise TypeError_(f"Unary operator '{op}' requires numeric operand", node)
 
         operations = {
             '+': lambda x: x,
@@ -281,14 +514,6 @@ class Evaluator:
         if op in operations:
             return operations[op](operand)
 
-        raise UndefinedOperatorError(f"Unknown unary operator '{op}'")
+        raise UndefinedOperatorError(f"Unknown unary operator '{op}'", node)
 
-    def _safe_div(self, a, b):
-        if b == 0:
-            raise DivideByZeroError("Division by zero")
-        return a / b
 
-    def _safe_mod(self, a, b):
-        if b == 0:
-            raise DivideByZeroError("Modulo by zero")
-        return a % b

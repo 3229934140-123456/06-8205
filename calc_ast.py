@@ -82,7 +82,8 @@ class OperatorTable:
 
 @dataclass
 class ASTNode:
-    pass
+    line: int = field(default=0, kw_only=True)
+    col: int = field(default=0, kw_only=True)
 
 
 @dataclass
@@ -147,3 +148,19 @@ class TernaryIfNode(ASTNode):
 @dataclass
 class BlockNode(ASTNode):
     statements: List[ASTNode]
+
+
+@dataclass
+class ListNode(ASTNode):
+    elements: List[ASTNode] = field(default_factory=list)
+
+
+@dataclass
+class RangeNode(ASTNode):
+    start: ASTNode = None
+    end: ASTNode = None
+
+
+@dataclass
+class DoBlockNode(ASTNode):
+    statements: List[ASTNode] = field(default_factory=list)
