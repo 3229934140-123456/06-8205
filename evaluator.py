@@ -1,13 +1,22 @@
-from typing import Any, Callable, Optional, List
+from typing import Any, Callable, Optional, List, Tuple
+from dataclasses import dataclass
 import sys
 from calc_ast import (
     ASTNode, NumberNode, IdentifierNode, BinaryOpNode, UnaryOpNode,
     AssignmentNode, FunctionCallNode, FunctionDefNode, OperatorDeclareNode,
     BlockNode, OperatorTable, Associativity, TernaryIfNode,
-    ListNode, RangeNode, DoBlockNode
+    ListNode, RangeNode, DoBlockNode, IndexNode, SliceNode,
+    ForNode, IfBlockNode, WhileBlockNode
 )
 from scope import Scope, FunctionValue
 from tokenizer import Token
+
+
+@dataclass
+class CallFrame:
+    func_name: str
+    line: int
+    col: int
 
 
 MAX_RECURSION_DEPTH = 500
@@ -60,7 +69,7 @@ class Evaluator:
         self._on_operator_declared = on_operator_declared
         self._recursion_depth = 0
         self._max_recursion = MAX_RECURSION_DEPTH
-        self._call_stack: List[str] = []
+        self._call_stack: List[CallFrame] = []
         self._init_builtins(builtin_functions or {})
 
     def _init_builtins(self, builtin_funcs: dict):
@@ -135,20 +144,20 @@ class Evaluator:
             return sum(x)
         raise TypeError_("sum() expects a list")
 
-    def _builtin_map(self, func, lst):
+    def _builtin_map(self, func, lst, node: ASTNode = None):
         if not isinstance(lst, list):
-            raise TypeError_("map() expects a list as second argument")
+            raise TypeError_("map() expects a list as second argument", node)
         result = []
         for item in lst:
-            result.append(self._apply_func(func, [item]))
+            result.append(self._apply_func(func, [item], node))
         return result
 
-    def _builtin_filter(self, func, lst):
+    def _builtin_filter(self, func, lst, node: ASTNode = None):
         if not isinstance(lst, list):
-            raise TypeError_("filter() expects a list as second argument")
+            raise TypeError_("filter() expects a list as second argument", node)
         result = []
         for item in lst:
-            val = self._apply_func(func, [item])
+            val = self._apply_func(func, [item], node)
             if val:
                 result.append(item)
         return result
@@ -205,15 +214,16 @@ class Evaluator:
     def _builtin_list(self, *args):
         return list(args)
 
-    def _apply_func(self, func, args):
+    def _apply_func(self, func, args, node: ASTNode = None):
         if callable(func) and not isinstance(func, FunctionValue):
             return func(*args)
         if isinstance(func, FunctionValue):
             if len(args) != len(func.params):
                 raise ArityMismatchError(
-                    f"Function expects {len(func.params)} args, got {len(args)}"
+                    f"Function expects {len(func.params)} args, got {len(args)}",
+                    node
                 )
-            self._enter_call(func.name)
+            self._enter_call(func.name, node)
             try:
                 call_scope = func.closure.create_child_scope(f"call_{func.name}")
                 for param, arg_val in zip(func.params, args):
@@ -227,18 +237,29 @@ class Evaluator:
                     self.current_scope = prev
             finally:
                 self._exit_call()
-        raise TypeError_(f"Cannot call non-function value")
+        raise TypeError_(f"Cannot call non-function value", node)
 
     def set_max_recursion(self, depth: int):
         self._max_recursion = depth
 
-    def _enter_call(self, func_name: str):
+    def _enter_call(self, func_name: str, node: ASTNode = None):
         self._recursion_depth += 1
-        self._call_stack.append(func_name)
+        line = node.line if node else 0
+        col = node.col if node else 0
+        self._call_stack.append(CallFrame(func_name, line, col))
         if self._recursion_depth > self._max_recursion:
-            stack_trace = " -> ".join(self._call_stack[-10:])
+            last_frames = self._call_stack[-10:]
+            stack_lines = []
+            for i, frame in enumerate(reversed(last_frames)):
+                if frame.line and frame.col:
+                    stack_lines.append(f"  #{i} {frame.func_name} at line {frame.line}, column {frame.col}")
+                else:
+                    stack_lines.append(f"  #{i} {frame.func_name}")
+            stack_trace = "\n".join(stack_lines)
+            top_frame = self._call_stack[-1]
             raise RecursionLimitError(
-                f"Recursion depth exceeded ({self._max_recursion}) in call chain: {stack_trace}"
+                f"Recursion depth exceeded ({self._max_recursion})\nCall stack (most recent first):\n{stack_trace}",
+                node
             )
 
     def _exit_call(self):
@@ -266,16 +287,23 @@ class Evaluator:
         return result
 
     def eval_DoBlockNode(self, node: DoBlockNode) -> Any:
-        block_scope = self.current_scope.create_child_scope("do_block")
-        prev = self.current_scope
-        self.current_scope = block_scope
-        try:
+        if node.is_local_scope:
+            block_scope = self.current_scope.create_child_scope("do_block")
+            block_scope.is_local_block = True
+            prev = self.current_scope
+            self.current_scope = block_scope
+            try:
+                result = None
+                for stmt in node.statements:
+                    result = self.evaluate(stmt)
+                return result
+            finally:
+                self.current_scope = prev
+        else:
             result = None
             for stmt in node.statements:
                 result = self.evaluate(stmt)
             return result
-        finally:
-            self.current_scope = prev
 
     def eval_NumberNode(self, node: NumberNode) -> float:
         return node.value
@@ -354,7 +382,10 @@ class Evaluator:
 
     def eval_AssignmentNode(self, node: AssignmentNode) -> Any:
         value = self.evaluate(node.value)
-        self.current_scope.assign_variable(node.name, value)
+        if getattr(self.current_scope, 'is_local_block', False):
+            self.current_scope.define_variable(node.name, value)
+        else:
+            self.current_scope.assign_variable(node.name, value)
         return value
 
     def eval_FunctionDefNode(self, node: FunctionDefNode) -> Any:
@@ -383,7 +414,7 @@ class Evaluator:
                     f"got {len(node.args)}", node
                 )
 
-            self._enter_call(node.name)
+            self._enter_call(node.name, node)
             try:
                 call_scope = func.closure.create_child_scope(f"call_{node.name}")
                 for param, arg in zip(func.params, node.args):
@@ -515,5 +546,75 @@ class Evaluator:
             return operations[op](operand)
 
         raise UndefinedOperatorError(f"Unknown unary operator '{op}'", node)
+
+    def eval_IndexNode(self, node: IndexNode) -> Any:
+        target = self.evaluate(node.target)
+        if not isinstance(target, list):
+            raise TypeError_("Cannot index non-list value", node)
+        idx_val = self.evaluate(node.index)
+        idx = int(idx_val)
+        if idx < 0 or idx >= len(target):
+            raise IndexError_(f"Index {idx} out of range (len={len(target)})", node)
+        return target[idx]
+
+    def eval_SliceNode(self, node: SliceNode) -> Any:
+        target = self.evaluate(node.target)
+        if not isinstance(target, list):
+            raise TypeError_("Cannot slice non-list value", node)
+        start = 0
+        end = len(target)
+        if node.start is not None:
+            start = int(self.evaluate(node.start))
+        if node.end is not None:
+            end = int(self.evaluate(node.end))
+        return target[start:end]
+
+    def eval_IfBlockNode(self, node: IfBlockNode) -> Any:
+        cond = self.evaluate(node.cond)
+        if cond:
+            return self.evaluate(node.then_body)
+        elif node.else_body is not None:
+            return self.evaluate(node.else_body)
+        return None
+
+    def eval_WhileBlockNode(self, node: WhileBlockNode) -> Any:
+        result = None
+        while True:
+            cond = self.evaluate(node.cond)
+            if not cond:
+                break
+            result = self.evaluate(node.body)
+        return result
+
+    def eval_ForNode(self, node: ForNode) -> Any:
+        iterable = self.evaluate(node.iterable)
+        if not isinstance(iterable, list):
+            raise TypeError_("for loop expects a list", node)
+
+        loop_scope = self.current_scope.create_child_scope("for_loop")
+        loop_scope.is_local_block = True
+        prev = self.current_scope
+        self.current_scope = loop_scope
+
+        result = None
+        accum_value = None
+        if node.accum_var and node.accum_init:
+            accum_value = self.evaluate(node.accum_init)
+            loop_scope.define_variable(node.accum_var, accum_value)
+
+        try:
+            for item in iterable:
+                loop_scope.define_variable(node.var_name, item)
+                if node.accum_var:
+                    loop_scope.define_variable(node.accum_var, accum_value)
+                result = self.evaluate(node.body)
+                if node.accum_var:
+                    accum_value = loop_scope.lookup_variable(node.accum_var)
+        finally:
+            self.current_scope = prev
+
+        if node.accum_var:
+            return accum_value
+        return result
 
 

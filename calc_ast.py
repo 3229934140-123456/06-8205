@@ -163,4 +163,40 @@ class RangeNode(ASTNode):
 
 @dataclass
 class DoBlockNode(ASTNode):
-    statements: List[ASTNode] = field(default_factory=list)
+    statements: List[ASTNode]
+    is_local_scope: bool = True
+
+
+@dataclass
+class IndexNode(ASTNode):
+    target: ASTNode
+    index: ASTNode
+
+
+@dataclass
+class SliceNode(ASTNode):
+    target: ASTNode
+    start: Optional[ASTNode] = None
+    end: Optional[ASTNode] = None
+
+
+@dataclass
+class ForNode(ASTNode):
+    var_name: str
+    iterable: ASTNode
+    body: ASTNode
+    accum_var: Optional[str] = None
+    accum_init: Optional[ASTNode] = None
+
+
+@dataclass
+class IfBlockNode(ASTNode):
+    cond: ASTNode
+    then_body: ASTNode
+    else_body: Optional[ASTNode] = None
+
+
+@dataclass
+class WhileBlockNode(ASTNode):
+    cond: ASTNode
+    body: ASTNode

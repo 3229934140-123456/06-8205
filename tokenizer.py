@@ -22,6 +22,10 @@ class TokenType(Enum):
     DO = auto()
     END = auto()
     DOTDOT = auto()
+    FOR = auto()
+    WHILE = auto()
+    IN = auto()
+    ELSE = auto()
     EOF = auto()
 
 
@@ -91,6 +95,10 @@ class Tokenizer:
             'right': TokenType.RIGHT_ASSOC,
             'do': TokenType.DO,
             'end': TokenType.END,
+            'for': TokenType.FOR,
+            'while': TokenType.WHILE,
+            'in': TokenType.IN,
+            'else': TokenType.ELSE,
         }
         token_type = keyword_map.get(value, TokenType.IDENTIFIER)
         return Token(token_type, value, self.line, start_col)

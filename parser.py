@@ -4,7 +4,8 @@ from calc_ast import (
     ASTNode, NumberNode, IdentifierNode, BinaryOpNode, UnaryOpNode,
     AssignmentNode, FunctionCallNode, FunctionDefNode, OperatorDeclareNode,
     BlockNode, OperatorTable, Associativity, TernaryIfNode,
-    ListNode, RangeNode, DoBlockNode
+    ListNode, RangeNode, DoBlockNode, IndexNode, SliceNode,
+    ForNode, IfBlockNode, WhileBlockNode
 )
 
 
@@ -80,6 +81,12 @@ class Parser:
             return self.parse_operator_declare()
         if self.check(TokenType.FUN):
             return self.parse_function_def()
+        if self.check(TokenType.WHILE):
+            return self.parse_while_block()
+        if self.check(TokenType.FOR):
+            return self.parse_for_block()
+        if self.check(TokenType.IDENTIFIER, 'if') and self.peek(1).type != TokenType.LPAREN:
+            return self.parse_if_block()
         if self.check(TokenType.IDENTIFIER) and self.peek(1).type == TokenType.ASSIGN:
             return self.parse_assignment()
         if self.check(TokenType.DO):
@@ -94,6 +101,68 @@ class Parser:
             stmts.append(self.parse_statement())
         self.expect(TokenType.END)
         return DoBlockNode(statements=stmts, **loc)
+
+    def parse_if_block(self) -> IfBlockNode:
+        loc = self._loc()
+        if_token = self.expect(TokenType.IDENTIFIER, 'if')
+        cond = self.parse_expression()
+        self.expect(TokenType.DO)
+        then_stmts = []
+        while not self.check(TokenType.END) and not self.check(TokenType.ELSE) and not self.at_end():
+            then_stmts.append(self.parse_statement())
+
+        if self.check(TokenType.ELSE):
+            self.advance()
+            if self.check(TokenType.DO):
+                self.advance()
+                else_stmts = []
+                while not self.check(TokenType.END) and not self.at_end():
+                    else_stmts.append(self.parse_statement())
+                self.expect(TokenType.END)
+                else_body = DoBlockNode(statements=else_stmts, is_local_scope=False, **loc)
+            else:
+                else_body = self.parse_statement()
+                self.expect(TokenType.END)
+            return IfBlockNode(cond, DoBlockNode(statements=then_stmts, is_local_scope=False, **loc), else_body, **loc)
+        else:
+            self.expect(TokenType.END)
+            return IfBlockNode(cond, DoBlockNode(statements=then_stmts, is_local_scope=False, **loc), None, **loc)
+
+    def parse_while_block(self) -> WhileBlockNode:
+        loc = self._loc()
+        self.expect(TokenType.WHILE)
+        cond = self.parse_expression()
+        self.expect(TokenType.DO)
+        stmts = []
+        while not self.check(TokenType.END) and not self.at_end():
+            stmts.append(self.parse_statement())
+        self.expect(TokenType.END)
+        return WhileBlockNode(cond, DoBlockNode(statements=stmts, is_local_scope=False, **loc), **loc)
+
+    def parse_for_block(self) -> ForNode:
+        loc = self._loc()
+        self.expect(TokenType.FOR)
+        var_token = self.expect(TokenType.IDENTIFIER)
+        var_name = var_token.value
+
+        accum_var = None
+        accum_init = None
+        if self.check(TokenType.COMMA):
+            self.advance()
+            accum_token = self.expect(TokenType.IDENTIFIER)
+            accum_var = accum_token.value
+            self.expect(TokenType.ASSIGN)
+            accum_init = self.parse_expression()
+
+        self.expect(TokenType.IN)
+        iterable = self.parse_expression()
+        self.expect(TokenType.DO)
+        stmts = []
+        while not self.check(TokenType.END) and not self.at_end():
+            stmts.append(self.parse_statement())
+        self.expect(TokenType.END)
+        body = DoBlockNode(statements=stmts, is_local_scope=False, **loc)
+        return ForNode(var_name, iterable, body, accum_var, accum_init, **loc)
 
     def parse_operator_declare(self) -> OperatorDeclareNode:
         loc = self._loc()
@@ -183,6 +252,32 @@ class Parser:
         while True:
             token = self.current()
 
+            if token.type == TokenType.LBRACKET:
+                loc = self._loc()
+                self.advance()
+                if self.check(TokenType.COLON):
+                    self.advance()
+                    end = None
+                    if not self.check(TokenType.RBRACKET):
+                        end = self.parse_expression()
+                    self.expect(TokenType.RBRACKET)
+                    left = SliceNode(left, None, end, **loc)
+                else:
+                    first = self.parse_expression()
+                    if self.check(TokenType.COLON):
+                        self.advance()
+                        end = None
+                        if not self.check(TokenType.RBRACKET):
+                            end = self.parse_expression()
+                        self.expect(TokenType.RBRACKET)
+                        left = SliceNode(left, first, end, **loc)
+                    else:
+                        self.expect(TokenType.RBRACKET)
+                        left = IndexNode(left, first, **loc)
+                left.line = left.line or token.line
+                left.col = left.col or token.column
+                continue
+
             if token.type == TokenType.QUESTION and 0 >= min_precedence:
                 loc = self._loc()
                 self.advance()
@@ -252,6 +347,15 @@ class Parser:
 
         if token.type == TokenType.DO:
             return self.parse_do_block()
+
+        if token.type == TokenType.FOR:
+            return self.parse_for_block()
+
+        if token.type == TokenType.WHILE:
+            return self.parse_while_block()
+
+        if token.type == TokenType.IDENTIFIER and token.value == 'if' and self.peek(1).type != TokenType.LPAREN:
+            return self.parse_if_block()
 
         if token.type == TokenType.OPERATOR:
             if token.value in ('+', '-', '!', '~'):

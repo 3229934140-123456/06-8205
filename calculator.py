@@ -56,6 +56,10 @@ def is_input_incomplete(source: str) -> bool:
     last_meaningful = None
     saw_fun = False
     saw_op = False
+    saw_if = False
+    saw_while = False
+    saw_for = False
+    saw_in = False
     saw_assign = False
 
     for tok in tokens:
@@ -77,6 +81,14 @@ def is_input_incomplete(source: str) -> bool:
             saw_fun = True
         elif tok.type == TokenType.OP_DECLARE:
             saw_op = True
+        elif tok.type == TokenType.IDENTIFIER and tok.value == 'if':
+            saw_if = True
+        elif tok.type == TokenType.WHILE:
+            saw_while = True
+        elif tok.type == TokenType.FOR:
+            saw_for = True
+        elif tok.type == TokenType.IN:
+            saw_in = True
         elif tok.type == TokenType.ASSIGN:
             saw_assign = True
         last_meaningful = tok
@@ -91,6 +103,21 @@ def is_input_incomplete(source: str) -> bool:
     if saw_op and last_meaningful and last_meaningful.type in (
         TokenType.LEFT_ASSOC, TokenType.RIGHT_ASSOC
     ):
+        return True
+
+    if saw_if and last_meaningful and last_meaningful.type not in (TokenType.END, TokenType.ELSE):
+        if depth_do == 0:
+            return True
+
+    if saw_while and last_meaningful and last_meaningful.type != TokenType.END:
+        if depth_do == 0:
+            return True
+
+    if saw_for and saw_in and last_meaningful and last_meaningful.type != TokenType.END:
+        if depth_do == 0:
+            return True
+
+    if saw_for and not saw_in:
         return True
 
     return False
